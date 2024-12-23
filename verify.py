@@ -16,7 +16,7 @@ def verify_signature(flask_route):
     def validate_route(*args, **kwargs):
         if not kwargs:
             kwargs["request_path"] = "/"
-
+        # TODO: Pull list of tokens from config file
         secret_token = ""
 
         sig_header = request.headers.get('X-Hub-Signature-256')

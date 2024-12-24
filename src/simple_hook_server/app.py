@@ -10,14 +10,20 @@ from hashlib import sha256
 from functools import wraps
 from flask import Flask, request, abort, current_app
 
-# class hookConfig:
-#     allow_paths = [
-#         '/',
-#     ]
+class BaseConfig:
+    LPORT = 5001
+    LHOST = "127.0.0.1"
+    KEYS = [
+        "secret-key1",
+        "secret-key2",
+        "secret-key3",
+        ]
 
-#     disallow_paths = [
-#         '/test'
-#     ]
+    DEBUG = True
+
+    ACTIONS = [
+        print
+    ]
 #### https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries ##
 def verify_signature(flask_route):
     """Verify that the payload was sent from GitHub by validating SHA256.
@@ -27,7 +33,7 @@ def verify_signature(flask_route):
 
     @wraps(flask_route)
     def validate_route(*args, **kwargs):
-        print(current_app.config['FUNCTION_PATHS'])
+        print(current_app.config)
 
         if not kwargs:
             kwargs["request_path"] = "/"
@@ -40,19 +46,18 @@ def verify_signature(flask_route):
 
         request_sig = sig_header.split('sha256=')[-1].strip()
 
-        expected_sig = hmac.new(
-### Use the flask request object here ###################################################
-            secret_token.encode('utf-8'),
-            msg=request.data, 
-            digestmod=sha256
-            ).hexdigest()
-        sig_match = hmac.compare_digest(expected_sig, request_sig)
+        for key in current_app.config["KEYS"]:
+            expected_sig = hmac.new(
+    ### Use the flask request object here ###################################################
+                secret_token.encode('utf-8'),
+                msg=request.data, 
+                digestmod=sha256
+                ).hexdigest()
 
-        if sig_match:
-            return flask_route(*args, **kwargs)
-
-        else:
-            abort(403)
+            if hmac.compare_digest(expected_sig, request_sig):
+                return flask_route(*args, **kwargs)
+        
+        return abort(403)
 
     return validate_route
 
@@ -61,7 +66,7 @@ def import_config(config_path: str) -> object:
     """
     Load and import a module from 
     """
-    spec = importlib.util.spec_from_file_location('hookConf', config_path)
+    spec = importlib.util.spec_from_file_location(config_path)
     spec.submodule_search_locations = [os.path.dirname(config_path)]
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -77,23 +82,23 @@ app = Flask(__name__)
 @app.route('/<path:request_path>', methods=['GET', 'POST'])
 @verify_signature
 def global_hook(request_path):
+    for a in current_app.config["ACTIONS"]:
+        if callable(a):
+            a(current_app)
+
     return 'Success', 200
-
-
-
-@app.route('/test/<other_var>', methods=['GET', 'POST'])
-def test_hook(other_var):
-    print(current_app.config["ALLOWED_PATHS"])
-    return 'Success', 200
-
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('-c','--config', type=str, help="Path to file containing a flask config object.")
     args = parser.parse_args()
+
+
+### Apply the basic config and then the custom config, this way the base config (and flasks default config) are
+### overwritten by the custom one 
+    app.config.from_object(BaseConfig)
     if args.config:
         config_obj = import_config(args.config)
         app.config.from_object(config_obj())
 
-    app.run(debug=True)
+    app.run(host=app.config['LHOST'], port=app.config['LPORT'], debug=app.config['DEBUG'])

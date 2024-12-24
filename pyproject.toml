@@ -1,0 +1,21 @@
+[project]
+name = "simple_hook_server"
+version = "0.0.1"
+authors = [
+  { name="sys-nyx", email="nyx@pwnvault.com" },
+]
+description = "A small example package"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "Flask>=3.1.0"
+]
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU 3.0",
+    "Operating System :: Linux",
+]
+
+[project.urls]
+Homepage = "https://github.com/sys-nyx/simple-python-hook-server"

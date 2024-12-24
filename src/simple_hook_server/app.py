@@ -10,21 +10,52 @@ from hashlib import sha256
 from functools import wraps
 from flask import Flask, request, abort, current_app
 
+
+
+def print_action(*args, **kwargs):
+    """
+    Default function meant to demonstrate the functionality 
+
+    """
+    print(request)
+    print(current_app)
+    print(args, kwargs)
+
+def root_action(*args, **kwargs):
+    print("Root Actions")
+    print(args, kwargs)
+
 class BaseConfig:
     LPORT = 5001
     LHOST = "127.0.0.1"
-    KEYS = [
+    HOOK_SECRETS = [
         "secret-key1",
         "secret-key2",
         "secret-key3",
+        "secret-key4",
+        "secret-key5",
+        "secret-key6",
+        "secret-key7",
+        "secret-key8",
+        "secret-key9",
+        "secret-key0",
+        "secret-key10",
         ]
 
     DEBUG = True
 
-    ACTIONS = [
-        print
+    GLOBAL_PRE_ACTIONS = [
+        print_action
     ]
-#### https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries ##
+
+    PATH_ACTIONS = {
+        "/": [root_action]
+    }
+
+def generate_sig(key, request):
+    return hmac.new(key.encode('utf-8'),msg=request.data,digestmod=sha256).hexdigest()
+
+#### https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries ###
 def verify_signature(flask_route):
     """Verify that the payload was sent from GitHub by validating SHA256.
 
@@ -33,12 +64,10 @@ def verify_signature(flask_route):
 
     @wraps(flask_route)
     def validate_route(*args, **kwargs):
-        print(current_app.config)
 
+### Assign '/' to kwargs if empty, so that a path always gets passed to request_path var in the global hook ###
         if not kwargs:
             kwargs["request_path"] = "/"
-        # TODO: Pull list of tokens from config file
-        secret_token = ""
 
         sig_header = request.headers.get('X-Hub-Signature-256')
         if not sig_header:
@@ -46,18 +75,22 @@ def verify_signature(flask_route):
 
         request_sig = sig_header.split('sha256=')[-1].strip()
 
-        for key in current_app.config["KEYS"]:
-            expected_sig = hmac.new(
-    ### Use the flask request object here ###################################################
-                secret_token.encode('utf-8'),
-                msg=request.data, 
-                digestmod=sha256
-                ).hexdigest()
+### Generate potential signatures from list of keys ###
+        possible_sigs = list(
+            map(
+                lambda s: generate_sig(s, request), current_app.config['HOOK_SECRETS']
+                )
+            )
+### Compare recieved signature to list of acceptable signatures
+        if any(
+            list(
+                map(
+                    lambda p: hmac.compare_digest(p, request_sig), possible_sigs
+                    )
+                )
+            ):
+            return flask_route(*args, **kwargs)
 
-            if hmac.compare_digest(expected_sig, request_sig):
-                return flask_route(*args, **kwargs)
-        
-        return abort(403)
 
     return validate_route
 
@@ -74,7 +107,12 @@ def import_config(config_path: str) -> object:
 ### Expects
     return module.hookConfig
 
+def call_func(f, *args):
+    if callable(f):
+        f(args)
+
 app = Flask(__name__)
+app.config.from_object(BaseConfig)
 ### To capture all possible paths, both '/' and '/<request_path> must be defined as routes or 
 ### requests to the root url will 404. 
 ### https://stackoverflow.com/questions/15117416/capture-arbitrary-path-in-flask-route
@@ -82,9 +120,9 @@ app = Flask(__name__)
 @app.route('/<path:request_path>', methods=['GET', 'POST'])
 @verify_signature
 def global_hook(request_path):
-    for a in current_app.config["ACTIONS"]:
-        if callable(a):
-            a(current_app)
+    any(call_func(a, current_app, request) for a in current_app.config["GLOBAL_PRE_ACTIONS"])
+
+
 
     return 'Success', 200
 
@@ -96,7 +134,6 @@ if __name__ == "__main__":
 
 ### Apply the basic config and then the custom config, this way the base config (and flasks default config) are
 ### overwritten by the custom one 
-    app.config.from_object(BaseConfig)
     if args.config:
         config_obj = import_config(args.config)
         app.config.from_object(config_obj())

@@ -6,50 +6,55 @@ import logging
 import hashlib
 import argparse
 import importlib
+import ipaddress
+import dns.resolver
 from hashlib import sha256
 from functools import wraps
 from flask import Flask, request, abort, current_app
 
-
-
-def print_action(*args, **kwargs):
+class BaseActions:
     """
-    Default function meant to demonstrate the functionality 
-
+    This class is meant to provide 
     """
-    print(request)
-    print(current_app)
-    print(args, kwargs)
+    def print_request_info(*args, **kwargs):
+        """
+        Default function meant to demonstrate the functionality 
 
-def root_action(*args, **kwargs):
-    print("Root Actions")
-    print(args, kwargs)
+        """
+        print(args, kwargs)
+
+    def root_path_action(*args, **kwargs):
+        print("Root Path Action")
 
 class BaseConfig:
-    LPORT = 5001
-    LHOST = "127.0.0.1"
+
+    LPORT = 5001 # Port to listen on. 
+    LHOST = "127.0.0.1" # Address or interface to listen on.
+    ALLOWED_HOSTS = [
+        "localhost"
+    ]
+    RESOLVE_HOSTNAMES = True
+###########################################################################
+###########################################################################
+# Make sure to overwrite the following sections by defining a 
+# list of secrets and custom actions in a custom config file.
     HOOK_SECRETS = [
-        "secret-key1",
-        "secret-key2",
-        "secret-key3",
-        "secret-key4",
-        "secret-key5",
-        "secret-key6",
-        "secret-key7",
-        "secret-key8",
-        "secret-key9",
-        "secret-key0",
-        "secret-key10",
+        "super-secret-key-1",
+        "super-secret-key-2",
+        "super-secret-key-3"
         ]
 
     DEBUG = True
 
-    GLOBAL_PRE_ACTIONS = [
-        print_action
+    GLOBAL_PREPATH_ACTIONS = [
+        BaseActions.print_request_info,
+        'This is a reminder to update your config!!!'
     ]
 
-    PATH_ACTIONS = {
-        "/": [root_action]
+    PATH_SPECIFIC_ACTIONS = {
+        "/": [
+            BaseActions().root_path_action
+            ]
     }
 
 def generate_sig(key, request):
@@ -81,7 +86,7 @@ def verify_signature(flask_route):
                 lambda s: generate_sig(s, request), current_app.config['HOOK_SECRETS']
                 )
             )
-### Compare recieved signature to list of acceptable signatures
+### Compare recieved signature to list of acceptable signatures. If any match, retunr the flask route.
         if any(
             list(
                 map(
@@ -91,40 +96,97 @@ def verify_signature(flask_route):
             ):
             return flask_route(*args, **kwargs)
 
-
+        return abort(401)
     return validate_route
-
 
 def import_config(config_path: str) -> object: 
     """
     Load and import a module from 
     """
-    spec = importlib.util.spec_from_file_location(config_path)
+    spec = importlib.util.spec_from_file_location('Config', config_path)
     spec.submodule_search_locations = [os.path.dirname(config_path)]
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
-### Expects
-    return module.hookConfig
+# Expects name of class definied in config file to be "Config"
+    return module.Config
 
-def call_func(f, *args):
+class Result(object):
+    def __init__(self, func, *args, **kwargs):
+        self.func = func
+        self.result = func(*args,**kwargs)
+    def __repr__(self):
+        return f"<results for func {self.func.__name__} result={self.result}>"
+
+class Results(object):
+    def __init__(self, result_obj):
+        self.results = {}
+        if result_obj.result:
+            self.results.update(result_obj.func.__name__, result_obj)
+
+def call_func(f, *args, **kwargs):
     if callable(f):
-        f(args)
+        return Result(f, args, kwargs)
+
+
+def is_ipaddress(ip):
+    try:
+        ip = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return True
 
 app = Flask(__name__)
 app.config.from_object(BaseConfig)
-### To capture all possible paths, both '/' and '/<request_path> must be defined as routes or 
-### requests to the root url will 404. 
-### https://stackoverflow.com/questions/15117416/capture-arbitrary-path-in-flask-route
+
+# To capture all possible paths, both '/' and '/<request_path> must be defined as routes or 
+# requests to the root url will 404. 
+# https://stackoverflow.com/questions/15117416/capture-arbitrary-path-in-flask-route
 @app.route('/')
 @app.route('/<path:request_path>', methods=['GET', 'POST'])
 @verify_signature
 def global_hook(request_path):
-    any(call_func(a, current_app, request) for a in current_app.config["GLOBAL_PRE_ACTIONS"])
+    """
+    Global hook
+    """
+    results = []
+    results = [
+        call_func(
+            a, 
+            current_app, 
+            request, 
+            results=results
+            ) 
+            for a in current_app.config["GLOBAL_PREPATH_ACTIONS"] if callable(a)
+        ]
 
 
-
+    if request_path in current_app.config["PATH_SPECIFIC_ACTIONS"].keys():
+        results = results + [
+            call_func(
+                a, 
+                current_app, 
+                request, 
+                results=results
+                ) 
+                for a in current_app.config["PATH_SPECIFIC_ACTIONS"][request_path] if callable(a)
+            ]
     return 'Success', 200
+
+@app.before_request
+def block_m():
+    ip = request.environ.get('REMOTE_ADDR')
+    ips = [h for h in current_app.config["ALLOWED_HOSTS"] if is_ipaddress(h)]
+    for a in current_app.config["ALLOWED_HOSTS"]:
+        resolved_names = [h.to_text() for h in dns.resolver.resolve(a, 'A') if not is_ipaddress(a)]
+    allowed_ips = ips + resolved_names
+
+    if ip not in allowed_ips:
+        abort(403)
+
+
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -136,6 +198,15 @@ if __name__ == "__main__":
 ### overwritten by the custom one 
     if args.config:
         config_obj = import_config(args.config)
-        app.config.from_object(config_obj())
+        app.config.from_object(config_obj)
 
-    app.run(host=app.config['LHOST'], port=app.config['LPORT'], debug=app.config['DEBUG'])
+        if not all(map(callable, app.config["GLOBAL_PREPATH_ACTIONS"])):
+            print("""\N{ESC}[31mThere seems to be an error in your configuration. One or more functions specified in GLOBAL_PREPATH_ACTIONS can not be called. It wil be ignored.\u001b[0m""")
+            for a in app.config["GLOBAL_PREPATH_ACTIONS"]:
+                if not callable(a):
+                    app.config["GLOBAL_PREPATH_ACTIONS"].remove(a)
+
+    app.run(
+        host=app.config['LHOST'], 
+        port=app.config['LPORT'], 
+        debug=app.config['DEBUG'])
